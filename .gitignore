@@ -1,0 +1,8 @@
+build/
+.vs/
+*.dp64
+*.dp32
+*.pdb
+*.log
+*.ini
+Samples/

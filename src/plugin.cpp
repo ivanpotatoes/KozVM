@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 #include "profiles.h"
+#include "backend.h"
 
 static HINSTANCE instance;
 static HWND owner;
@@ -19,7 +20,7 @@ struct Settings {
     bool cpuid = true, firmware = true, sandboxie = true;
 };
 static Settings settings;
-static constexpr int settingsMenu = 100, disabledMenu = 101;
+static constexpr int settingsMenu = 100, disabledMenu = 101, applyMenu = 102, statusMenu = 103;
 
 static void updateMenus()
 {
@@ -63,11 +64,36 @@ static void loadSettings()
     settings.sandboxie = read(L"Options", L"Sandboxie");
 }
 
+static bool applyCommand(int, char**)
+{
+    std::lock_guard<std::recursive_mutex> lock(gate);
+    return Backend::apply(profiles[settings.profile].id, settings.enabled, settings.cpuid);
+}
+
+static void lifecycle(CBTYPE type, void*)
+{
+    if(type == CB_SYSTEMBREAKPOINT) {
+        Backend::cleanSavedBreakpoints();
+        std::lock_guard<std::recursive_mutex> lock(gate);
+        if(settings.enabled && settings.autoEnable) DbgCmdExec("kvm_apply");
+    } else if(type == CB_STOPPINGDEBUG || type == CB_DETACH) {
+        Backend::stop(true);
+    } else if(type == CB_INITDEBUG || type == CB_STOPDEBUG) {
+        Backend::reset();
+    }
+}
+
 static void updateOptions(HWND wnd)
 {
     const auto i = SendDlgItemMessageW(wnd, 110, CB_GETCURSEL, 0, 0);
     const bool extra = i >= 0 && static_cast<size_t>(i) < profiles.size()
-        && profiles[static_cast<size_t>(i)].firmwareAndModule;
+        && profiles[static_cast<size_t>(i)].firmwareAndModule
+        && Backend::available(profiles[static_cast<size_t>(i)].id);
+    const bool available = i >= 0 && static_cast<size_t>(i) < profiles.size()
+        && Backend::available(profiles[static_cast<size_t>(i)].id);
+    EnableWindow(GetDlgItem(wnd, 121), available);
+    SetDlgItemTextW(wnd, 203, available ? L"CPUID backend available for this profile"
+        : L"Backend not published for this profile yet");
     EnableWindow(GetDlgItem(wnd, 122), extra);
     EnableWindow(GetDlgItem(wnd, 123), extra);
 }
@@ -89,7 +115,7 @@ static INT_PTR CALLBACK dialog(HWND wnd, UINT msg, WPARAM wp, LPARAM)
             WS_POPUP | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
             CW_USEDEFAULT, wnd, nullptr, instance, nullptr);
         const wchar_t* tips[] = {
-            L"CPUID policy: hypervisor bit, Microsoft Hv vendor and partition privilege. Saved configuration only; backend not published yet.",
+            L"CPUID policy for 331/340/350: hypervisor bit, Microsoft Hv vendor and partition privilege. Handlers are located at runtime; target code bytes remain unchanged.",
             L"Firmware scanner option for 3.9.4 and 3.10.1. Saved configuration only; backend not published yet.",
             L"Sandboxie module query option for 3.9.4 and 3.10.1. Saved configuration only; backend not published yet."
         };
@@ -108,7 +134,7 @@ static INT_PTR CALLBACK dialog(HWND wnd, UINT msg, WPARAM wp, LPARAM)
         if(LOWORD(wp) == IDCANCEL) { EndDialog(wnd, 0); return TRUE; }
         if(LOWORD(wp) == 150) {
             MessageBoxW(wnd, L"KozVM x64\n\nCreator: Ivan Kozlovsky\nivankozlovsky.com\n"
-                L"contact@ivankozlovsky.com\n\nPublic source preview: GUI and profiles only.",
+                L"contact@ivankozlovsky.com\n\nPublished x64 backend: 3.3.1 / 3.4.0 / 3.5.0.",
                 L"About KozVM", MB_OK | MB_ICONINFORMATION);
             return TRUE;
         }
@@ -116,6 +142,10 @@ static INT_PTR CALLBACK dialog(HWND wnd, UINT msg, WPARAM wp, LPARAM)
             std::lock_guard<std::recursive_mutex> lock(gate);
             const auto i = SendDlgItemMessageW(wnd, 110, CB_GETCURSEL, 0, 0);
             if(i < 0 || static_cast<size_t>(i) >= profiles.size()) return TRUE;
+            if(!Backend::stop()) {
+                MessageBoxW(wnd, L"Pause the target and check the log before applying.", L"KozVM", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
             settings.profile = static_cast<unsigned>(i);
             settings.enabled = IsDlgButtonChecked(wnd, 120) == BST_CHECKED;
             settings.autoEnable = IsDlgButtonChecked(wnd, 111) == BST_CHECKED;
@@ -127,7 +157,7 @@ static INT_PTR CALLBACK dialog(HWND wnd, UINT msg, WPARAM wp, LPARAM)
                     L"KozVM", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
-            _plugin_logputs("[KozVM] Settings saved. Anti-VM backend is not included in this snapshot.");
+            if(DbgIsDebugging()) DbgCmdExec("kvm_apply");
             EndDialog(wnd, 1); return TRUE;
         }
     }
@@ -153,11 +183,15 @@ static void menu(CBTYPE, void* data)
         GuiExecuteOnGuiThread(showSettings);
         return;
     }
+    if(id == applyMenu) { DbgCmdExec("kvm_apply"); return; }
+    if(id == statusMenu) { DbgCmdExec("kvm_status"); return; }
+    if(!Backend::stop()) return;
     if(id == disabledMenu) { settings.enabled = false; saveSettings(); return; }
     for(unsigned i = 0; i < profiles.size(); ++i)
         if(id == profiles[i].id) {
             settings.profile = i; settings.enabled = true; saveSettings();
-            _plugin_logputs("[KozVM] Profile selected. Backend not included in this snapshot.");
+            if(DbgIsDebugging()) DbgCmdExec("kvm_apply");
+            else if(!Backend::available(id)) _plugin_logputs("[KozVM] Backend not published for this profile.");
             return;
         }
 }
@@ -175,7 +209,12 @@ extern "C" __declspec(dllexport) bool pluginit(PLUG_INITSTRUCT* init)
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_WIN95_CLASSES};
     InitCommonControlsEx(&controls);
     _plugin_registercallback(pluginHandle, CB_MENUENTRY, menu);
-    _plugin_logputs("[KozVM] GUI/profile preview loaded; no anti-VM backend included.");
+    _plugin_registercommand(pluginHandle, "kvm_apply", applyCommand, false);
+    _plugin_registercommand(pluginHandle, "kvm_hit", Backend::hit, true);
+    _plugin_registercommand(pluginHandle, "kvm_status", Backend::status, false);
+    for(auto type : {CB_SYSTEMBREAKPOINT, CB_INITDEBUG, CB_STOPPINGDEBUG, CB_DETACH, CB_STOPDEBUG})
+        _plugin_registercallback(pluginHandle, type, lifecycle);
+    _plugin_logputs("[KozVM] Published x64 backends: 331, 340, 350.");
     return true;
 }
 
@@ -186,13 +225,18 @@ extern "C" __declspec(dllexport) void plugsetup(PLUG_SETUPSTRUCT* setup)
     _plugin_menuaddentry(setup->hMenu, disabledMenu, "Disabled");
     _plugin_menuaddseparator(setup->hMenu);
     _plugin_menuaddentry(setup->hMenu, settingsMenu, "Settings...");
+    _plugin_menuaddentry(setup->hMenu, applyMenu, "Apply to paused session");
+    _plugin_menuaddentry(setup->hMenu, statusMenu, "Status");
     menuReady = true; updateMenus();
 }
 
 extern "C" __declspec(dllexport) bool plugstop()
 {
     std::lock_guard<std::recursive_mutex> lock(gate);
-    if(dialogOpen) return false;
+    if(dialogOpen || !Backend::stop()) return false;
+    for(const char* name : {"kvm_apply", "kvm_hit", "kvm_status"}) _plugin_unregistercommand(pluginHandle, name);
+    for(auto type : {CB_SYSTEMBREAKPOINT, CB_INITDEBUG, CB_STOPPINGDEBUG, CB_DETACH, CB_STOPDEBUG})
+        _plugin_unregistercallback(pluginHandle, type);
     _plugin_unregistercallback(pluginHandle, CB_MENUENTRY);
     menuReady = false;
     return true;

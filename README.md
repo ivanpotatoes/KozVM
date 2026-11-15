@@ -12,6 +12,8 @@ An open-source anti-anti-VM plugin for **x64dbg**, built from my research into V
 
 KozVM discovers addresses in the loaded target instead of relying on sample names or fixed addresses. Each tested version has its own profile, selectable from the Plugins menu or the settings window.
 
+![KozVM x64 settings](media/screenshots/settings.png)
+
 ## Supported versions
 
 | VMProtect | Profile | x64 | x32 |
@@ -45,6 +47,10 @@ The settings window offers CPUID handling across the supported profiles. The 3.9
 Unicorn executes an isolated snapshot to discover CPUID sites, then KozVM installs hardware breakpoints in the live target. Unrecognized paths fall back to slower guarded discovery and are reported in the log. Available hardware breakpoint slots can affect installation.
 
 ## Profiles
+
+Select a version directly from the Plugins menu without opening Settings.
+
+![KozVM x64 profiles menu](media/screenshots/profiles-menu.png)
 
 KozVM.dp64.ini stores the selected profile, auto-arm setting and individual options. Profile IDs are listed above. The implementations are C++ code; adding an INI entry alone does not implement a new VMProtect version.
 

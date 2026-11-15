@@ -1,5 +1,7 @@
 #include <windows.h>
-101 DIALOGEX 0,0,280,222
+102 ICON "../assets/kozvm.ico"
+103 RCDATA "../assets/kozvm-menu.png"
+101 DIALOGEX 0,0,280,205
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "KozVM x64"
 FONT 9,"Segoe UI"
@@ -15,9 +17,8 @@ BEGIN
  CONTROL "?",201,"Static",SS_CENTER | SS_NOTIFY,250,107,10,12
  CONTROL "Sandboxie module (sbiedll.dll)",123,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,20,127,225,12
  CONTROL "?",202,"Static",SS_CENTER | SS_NOTIFY,250,127,10,12
- LTEXT "Firmware / module backends not published yet",-1,12,161,258,12
- LTEXT "",203,12,178,258,12
- PUSHBUTTON "About",150,10,198,45,19
- DEFPUSHBUTTON "Save && apply",IDOK,127,198,82,19
- PUSHBUTTON "Close",IDCANCEL,215,198,55,19
+ LTEXT "Firmware / module options: 3.9.4 and 3.10.1 only",-1,12,161,258,12
+ PUSHBUTTON "About",150,10,181,45,19
+ DEFPUSHBUTTON "Save && apply",IDOK,127,181,82,19
+ PUSHBUTTON "Close",IDCANCEL,215,181,55,19
 END

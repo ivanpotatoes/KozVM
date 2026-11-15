@@ -1,80 +1,66 @@
 # KozVM
 
-An x64dbg anti-anti-VM plugin for VMProtect. No kernel driver required.
+An open-source anti-anti-VM plugin for x64dbg, built from my VMProtect research. **No kernel driver required.**
 
-## Published backends
+KozVM discovers addresses in the loaded target instead of relying on sample names or fixed addresses. Each tested version has its own profile, selectable from the Plugins menu or the settings window.
 
-This repository is being published in parts from the existing local project.
-The current snapshot includes the x64 CPUID backend for **3.3.1, 3.4.0 and 3.5.0**,
-the settings dialog and INI persistence. Later profiles remain visible so settings
-can be kept, but their backends are not included here.
+## Supported versions
 
-| VMProtect | Profile | Architecture | Backend in this repository |
+| VMProtect | Profile | x64 | x32 |
 |---|---|---|---|
-| 3.3.1 | 331 | x64 | Included |
-| 3.4.0 | 340 | x64 | Included |
-| 3.5.0 | 350 | x64 | Included |
-| 3.6.0 | 360 | x64 | Not published yet |
-| 3.8.0 | 380 | x64 | Not published yet |
-| 3.9.4 | 394 | x64 | Not published yet |
-| 3.10.1 | 3101 | x64 | Not published yet |
+| 3.3.1 | 331 | Tested | Not implemented |
+| 3.4.0 | 340 | Tested | Not implemented |
+| 3.5.0 | 350 | Tested | Not implemented |
+| 3.6.0 | 360 | Tested | Not implemented |
+| 3.8.0 | 380 | Tested | Not implemented |
+| 3.9.4 | 394 | Tested | Not implemented |
+| 3.10.1 | 3101 | Tested | Not implemented |
 
-The early backend finds CPUID handlers in executable sections at runtime.
-It uses the accepted Microsoft Hv / CreatePartitions path observed in the
-research samples. There are no fixed sample addresses, executable names or
-hashes in the matching logic. Memory execute breakpoints track the handlers;
-busy pages may move to free hardware slots without changing target code bytes.
-Owned breakpoints are removed when the three-leaf path completes.
+Tests used our protected BasicProbe samples. Passing these tests does not guarantee compatibility with every protected program or configuration. x32 development has not started.
 
-This snapshot does not contain firmware scanning hooks, Sandboxie module hooks,
-an independent TF handler, or x32 support. Selecting an unpublished profile
-reports that its backend is unavailable rather than using another version's backend.
+## Installation
 
-## Use
+Download the x64 ZIP from [Releases](https://github.com/ivanpotatoes/KozVM/releases/latest). With x64dbg closed, copy its plugins folder contents into your debugger's plugins folder.
 
-Select **3.3.1**, **3.4.0** or **3.5.0** under **Plugins > KozVM x64** before
-loading the target. With **Enable KozVM**, **Auto-enable on start** and
-**CPUID compatibility** enabled, setup is queued at the system breakpoint.
-Continue execution normally. For an already paused target, use **Apply to
-paused session** before its VM checks execute.
+The package includes KozVM.dp64, KozVM.dp64.ini and the KozVM runtime folder containing unicorn.dll and its license texts. Keep the runtime folder beside the plugin. **Keep your existing INI when updating** to preserve your settings.
 
-Pause before changing profiles, applying settings or unloading the plugin.
-**Status** reports the active backend and CPUID hit counts. Commands are
-`kvm_apply` and `kvm_status`; `kvm_hit` is the internal breakpoint callback.
-Firmware and Sandboxie controls remain disabled in this snapshot.
+Unicorn requires the Microsoft Visual C++ x64 runtime. Python is only needed to prepare a source build.
 
-Settings are stored beside the DLL in `KozVM.dp64.ini`. The selected profile
-uses `Settings/Profile`; enable and startup flags use `Settings/Enabled` and
-`Settings/AutoArm`. Global options use `Options/CPUID`, `Options/Firmware` and
-`Options/Sandboxie`. Unknown INI keys are preserved. Cancel discards dialog edits.
+## Usage
 
-## Validation and limits
+1. Select the matching version under Plugins > KozVM.
+2. Leave auto-arm enabled and load the protected executable.
+3. Run the target. Check the debugger log for discovery and installation results.
 
-The local early backend previously reached the original entry in the supplied
-3.3.1, 3.4.0 and 3.5.0 x64 samples, with all three CPUID leaves handled.
-This separated public build passes MSVC Release compilation with `/W4 /WX /analyze`;
-it has not had a fresh native regression run after extraction.
+The settings window offers CPUID handling across the supported profiles. The 3.9.4 and 3.10.1 profiles additionally handle the firmware scanner and Sandboxie module query. These options affect the debugged process, not your VM configuration globally.
 
-Those sample results do not establish compatibility with every protected
-program or real VM configuration. Discovery can slow startup. An unsupported
-handler layout, unreadable executable page or conflicting memory breakpoint
-causes setup to fail with a log message. Keep existing INI files when updating.
+Unicorn executes an isolated snapshot to discover CPUID sites, then KozVM installs hardware breakpoints in the live target. Unrecognized paths fall back to slower guarded discovery and are reported in the log. Available hardware breakpoint slots can affect installation.
+
+## Profiles
+
+KozVM.dp64.ini stores the selected profile, auto-arm setting and individual options. Profile IDs are listed above. The implementations are C++ code; adding an INI entry alone does not implement a new VMProtect version.
 
 ## Build
 
-Use Visual Studio 2022 with the C++ tools, CMake 3.20 or newer and the x64dbg plugin SDK.
+Use Visual Studio 2022 C++ tools, CMake, Python 3 and the x64dbg SDK.
 
 ```powershell
+python tools/fetch_unicorn.py
 cmake -S . -B build -A x64 -DX64DBG_SDK="C:/path/to/pluginsdk"
 cmake --build build --config Release
 ```
 
-Output: `build/Release/KozVM.dp64`.
-Copy it into x64dbg's `plugins` directory to load the plugin. Only the three published early profiles have backends in this snapshot.
+Output: build/Release/KozVM.dp64 and its KozVM runtime directory. The dependency script downloads pinned Unicorn 2.1.4 runtime and source archives and verifies their SHA-256 hashes.
 
-## Contact
+main contains the published project, x64 tracks the x64 implementation, and x32 is reserved for future development.
 
-Ivan Kozlovsky  
-[ivankozlovsky.com](https://ivankozlovsky.com)  
-contact@ivankozlovsky.com  
-[PGP key](https://ivankozlovsky.com/pgp.asc)
+## License and contact
+
+GPLv2. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md). Release source packages include the corresponding Unicorn source archive.
+
+Ivan Kozlovsky
+
+- Website and research: https://ivankozlovsky.com
+- Email: contact@ivankozlovsky.com
+- PGP: https://ivankozlovsky.com/pgp.asc
+- Bug reports: https://github.com/ivanpotatoes/KozVM/issues

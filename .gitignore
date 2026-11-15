@@ -6,3 +6,11 @@ build/
 *.log
 *.ini
 Samples/
+
+*.dll
+*.zip
+*.whl
+*.tar.gz
+dist/
+__pycache__/
+!config/*.ini

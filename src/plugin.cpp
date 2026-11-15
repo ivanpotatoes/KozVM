@@ -32,8 +32,11 @@ static const Profile profiles[]={
 static constexpr unsigned profileCount=sizeof(profiles)/sizeof(profiles[0]);
 static unsigned selected=0;
 static bool cpuidOption=true,firmwareOption=true,moduleOption=true;
+static bool fastDiscovery(){const auto id=profiles[selected].id;return id==331||id==340||id==350||id==360||id==380||id==394||id==3101;}
 static bool scansFirmware(){return profiles[selected].id==394||profiles[selected].id==3101;}
 static duint firmwareScanner=0,moduleQuery=0;
+static duint discoveryEntry=0;
+static ULONGLONG interceptionStarted=0;
 static uint64_t leaf1Hits=0,vendorHits=0,privilegeHits=0;
 struct Owned {duint pc;std::string name,command;BPXTYPE kind=bp_memory;};
 struct Pending {duint site,sp;unsigned leaf;};
@@ -56,7 +59,7 @@ static bool disarm(bool stopping=false){
   if(!cmd(std::string(it->kind==bp_memory?"bpmc ":"bphwc ")+hex(it->pc))){ok=false;++it;continue;}
   it=owned.erase(it);
  }
- if(ok){armed=false;pending.clear();sites.clear();}
+ if(ok){armed=false;discoveryEntry=0;pending.clear();sites.clear();}
  return ok;
 }
 static bool add(duint pc){
@@ -127,14 +130,15 @@ static bool firmwareSignature(duint pc){
  }
  return true;
 }
-static bool hardware(duint pc){
- if(DbgGetBpxTypeAt(pc)!=bp_none)return false;
+static bool hardware(duint pc,bool allowSoftware=false){
+ auto existing=DbgGetBpxTypeAt(pc);if(existing!=bp_none&&!(allowSoftware&&existing==bp_normal))return false;
  Owned o{pc,"KVM_HW_"+hex(pc),"kvm_hit",bp_hardware};
  if(!cmd("bphws "+hex(pc)+",x,1"))return false;
  if(!cmd("SetHardwareBreakpointName "+hex(pc)+",\""+o.name+"\"")){cmd("bphwc "+hex(pc));return false;}
  owned.push_back(o);
  return cmd("SetHardwareBreakpointCommand "+hex(pc)+",kvm_hit")&&cmd("SetHardwareBreakpointCondition "+hex(pc)+",0")&&cmd("SetHardwareBreakpointCommandCondition "+hex(pc)+",1")&&cmd("SetHardwareBreakpointFastResume "+hex(pc)+",0")&&cmd("SetHardwareBreakpointSilent "+hex(pc)+",1");
 }
+#include "cpuid_discovery.h"
 static bool returnZero(){duint dest=0,sp=R::GetCSP();return DbgMemRead(sp,&dest,sizeof(dest))&&R::SetRAX(0)&&R::SetCSP(sp+sizeof(duint))&&R::SetCIP(dest);}
 static bool scan(std::vector<duint>& result){
  firmwareScanner=0;moduleQuery=0;
@@ -169,6 +173,24 @@ static bool armExtra(){
 static bool apply(int,char**){std::lock_guard<std::recursive_mutex> lock(gate);
  if(!DbgIsDebugging()||DbgIsRunning()){log("Load and pause an x64 target first.");return false;}
  if(!disarm())return false;if(!enabled){log("Disabled.");return true;}
+ if(fastDiscovery()&&cpuidOption){
+  auto entry=M::GetMainModuleEntry();
+  if(R::GetCIP()!=entry){
+   discoveryEntry=entry;
+   if(!entry||!hardware(entry,true)){discoveryEntry=0;log("Cannot arm protected-entry discovery; free a hardware breakpoint slot.");return false;}
+   log((std::to_string(profiles[selected].id)+": waiting at the PE entry for read-only CPUID discovery; no page guards.").c_str());return true;
+  }
+  Discovery::Engine explorer;std::vector<duint> predicted;auto start=GetTickCount64();
+  log((std::to_string(profiles[selected].id)+": discovering CPUID sites in an isolated snapshot ("+std::to_string(profiles[selected].id==3101?60:profiles[selected].id>=380?30:15)+"-second budget).").c_str());
+  if(explorer.run(predicted)){
+   // Resolve the later firmware/module stage too; discovery stops at CPUID.
+   if(scansFirmware()){std::vector<duint> checked;if(!scan(checked)){log("Firmware/module discovery failed; fast profile not armed.");return false;}}
+   for(auto pc:predicted)if(!hardware(pc)){log("Not enough hardware slots for discovered CPUID sites; setup rolled back.");disarm();return false;}
+   sites=std::move(predicted);leaf1Hits=vendorHits=privilegeHits=0;armed=true;interceptionStarted=0;
+   char message[180];sprintf_s(message,"%d: discovered %u CPUID sites in %llu ms; hardware only, zero page guards, code unchanged.",profiles[selected].id,static_cast<unsigned>(sites.size()),GetTickCount64()-start);log(message);return true;
+  }
+  log((std::to_string(profiles[selected].id)+" fast discovery unavailable: "+explorer.error+". Falling back to guarded discovery (slower).").c_str());
+ }
  std::vector<duint> candidates;
  if(!scan(candidates)){log("No supported CPUID handler layout, or scan failed. Profile not armed.");return false;}
  if(!cpuidOption){if(!scansFirmware()){log("CPUID is disabled; this profile has no independent firmware/module hooks.");return true;}return armExtra();}
@@ -227,6 +249,7 @@ static void accelerate(duint pc){
 }
 static bool hit(int,char**){std::lock_guard<std::recursive_mutex> lock(gate);
  duint pc=R::GetCIP();
+ if(discoveryEntry&&pc==discoveryEntry){discoveryEntry=0;return apply(0,nullptr);}
  if(scansFirmware()&&firmwareOption&&pc==firmwareScanner){if(!returnZero()){log("Firmware return emulation failed.");return false;}log("Firmware scanner returned clean.");return true;}
  if(scansFirmware()&&moduleOption&&pc==moduleQuery){char name[13]{};if(DbgMemRead(R::GetRCX(),name,sizeof(name)-1)&&_stricmp(name,"sbiedll.dll")==0){if(!returnZero())return false;log("Sandboxie module query returned absent.");disarm();}return true;}
  if(!armed)return false;
@@ -244,7 +267,7 @@ static bool hit(int,char**){std::lock_guard<std::recursive_mutex> lock(gate);
  else {char text[128];sprintf_s(text,"CPUID leaf %08X handled at %llX",leaf,static_cast<unsigned long long>(pc));log(text);
   if(leaf==0x40000003&&leaf1Hits&&vendorHits){
    bool clean=true;for(auto it=owned.begin();it!=owned.end();){if(same(*it)&&cmd(std::string(it->kind==bp_memory?"bpmc ":"bphwc ")+hex(it->pc)))it=owned.erase(it);else{clean=false;++it;}}
-   if(clean){armed=false;sites.clear();char message[128];sprintf_s(message,"Profile %d accepted CPUID path complete; all KozVM guards removed.",profiles[selected].id);log(message);if(scansFirmware()){if(!armExtra()){log("Firmware/module breakpoint setup failed; pausing.");DbgCmdExec("pause");return false;}log("Firmware and module monitoring armed.");}}else log("Guard cleanup failed; pause and inspect before continuing.");
+   if(clean){armed=false;sites.clear();if(interceptionStarted){char timing[100];sprintf_s(timing,"Native CPUID phase completed in %llu ms.",GetTickCount64()-interceptionStarted);log(timing);interceptionStarted=0;}char message[128];sprintf_s(message,"Profile %d accepted CPUID path complete; all KozVM guards removed.",profiles[selected].id);log(message);if(scansFirmware()){if(!armExtra()){log("Firmware/module breakpoint setup failed; pausing.");DbgCmdExec("pause");return false;}log("Firmware and module monitoring armed.");}}else log("Guard cleanup failed; pause and inspect before continuing.");
   }
  }
  return ok;
@@ -256,7 +279,9 @@ static bool profile(int argc,char** argv){std::lock_guard<std::recursive_mutex> 
  if(!disarm())return false;enabled=next!=profileCount;if(enabled)selected=next;save();if(DbgIsDebugging()&&enabled)return apply(0,nullptr);return true;
 }
 static INT_PTR CALLBACK dialog(HWND wnd,UINT msg,WPARAM wp,LPARAM){
- if(msg==WM_INITDIALOG){dialogWindow=wnd;for(const auto& p:profiles)SendDlgItemMessageW(wnd,110,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(p.wide));SendDlgItemMessageW(wnd,110,CB_SETCURSEL,selected,0);CheckDlgButton(wnd,111,autoArm?BST_CHECKED:BST_UNCHECKED);CheckDlgButton(wnd,120,enabled?BST_CHECKED:BST_UNCHECKED);
+ if(msg==WM_INITDIALOG){dialogWindow=wnd;
+  SendMessageW(wnd,WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(LoadIconW(instance,MAKEINTRESOURCEW(102))));
+  SendMessageW(wnd,WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(LoadIconW(instance,MAKEINTRESOURCEW(102))));for(const auto& p:profiles)SendDlgItemMessageW(wnd,110,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(p.wide));SendDlgItemMessageW(wnd,110,CB_SETCURSEL,selected,0);CheckDlgButton(wnd,111,autoArm?BST_CHECKED:BST_UNCHECKED);CheckDlgButton(wnd,120,enabled?BST_CHECKED:BST_UNCHECKED);
   HWND tip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,wnd,nullptr,instance,nullptr);
   const wchar_t* tips[]={L"CPUID: set hypervisor bit 31, Microsoft Hv vendor and CreatePartitions bit as one compatible policy. Turning this off leaves CPU results unchanged.",L"3.9.4 / 3.10.1 only: return clean from the identified firmware scanner. Earlier profiles skip this path via CPUID; they have no independent firmware hook.",L"3.9.4 / 3.10.1 only: return absent for GetModuleHandleA(\"sbiedll.dll\"). Other module names are not changed."};
   for(int i=0;i<3;++i){TOOLINFOW ti{};ti.cbSize=sizeof(ti);ti.uFlags=TTF_IDISHWND|TTF_SUBCLASS;ti.hwnd=wnd;ti.uId=reinterpret_cast<UINT_PTR>(GetDlgItem(wnd,200+i));ti.lpszText=const_cast<wchar_t*>(tips[i]);SendMessageW(tip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&ti));}SendMessageW(tip,TTM_SETMAXTIPWIDTH,0,360);
@@ -265,7 +290,7 @@ static INT_PTR CALLBACK dialog(HWND wnd,UINT msg,WPARAM wp,LPARAM){
  if(msg==WM_COMMAND){
   if(LOWORD(wp)==110&&HIWORD(wp)==CBN_SELCHANGE){auto i=SendDlgItemMessageW(wnd,110,CB_GETCURSEL,0,0);bool extra=i>=0&&i<profileCount&&(profiles[i].id==394||profiles[i].id==3101);EnableWindow(GetDlgItem(wnd,122),extra);EnableWindow(GetDlgItem(wnd,123),extra);return TRUE;}
   if(LOWORD(wp)==IDCANCEL){EndDialog(wnd,0);return TRUE;}
-  if(LOWORD(wp)==150){MessageBoxW(wnd,L"KozVM x64\n\nCreator: Ivan Kozlovsky\ncontact@ivankozlovsky.com\nivankozlovsky.com\n\nVMProtect 3.3.1 / 3.4.0 / 3.5.0 / 3.6.0 / 3.8.0 / 3.9.4 / 3.10.1 - x64",L"About KozVM",MB_OK|MB_ICONINFORMATION);return TRUE;}
+  if(LOWORD(wp)==150){MSGBOXPARAMSW box{};box.cbSize=sizeof(box);box.hwndOwner=wnd;box.hInstance=instance;box.lpszText=L"KozVM x64\n\nCreator: Ivan Kozlovsky\ncontact@ivankozlovsky.com\nivankozlovsky.com\n\nVMProtect 3.3.1 / 3.4.0 / 3.5.0 / 3.6.0 / 3.8.0 / 3.9.4 / 3.10.1 - x64";box.lpszCaption=L"About KozVM";box.dwStyle=MB_OK|MB_USERICON;box.lpszIcon=MAKEINTRESOURCEW(102);MessageBoxIndirectW(&box);return TRUE;}
   if(LOWORD(wp)==IDOK){std::lock_guard<std::recursive_mutex> lock(gate);if(!disarm()){MessageBoxW(wnd,L"Pause the target and check the log before applying.",L"KozVM",MB_OK|MB_ICONWARNING);return TRUE;}auto choice=SendDlgItemMessageW(wnd,110,CB_GETCURSEL,0,0);if(choice>=0&&choice<profileCount)selected=static_cast<unsigned>(choice);enabled=IsDlgButtonChecked(wnd,120)==BST_CHECKED;autoArm=IsDlgButtonChecked(wnd,111)==BST_CHECKED;cpuidOption=IsDlgButtonChecked(wnd,121)==BST_CHECKED;firmwareOption=IsDlgButtonChecked(wnd,122)==BST_CHECKED;moduleOption=IsDlgButtonChecked(wnd,123)==BST_CHECKED;save();if(DbgIsDebugging())DbgCmdExec("kvm_apply");EndDialog(wnd,1);return TRUE;}
  }
  if(msg==WM_CLOSE){EndDialog(wnd,0);return TRUE;}if(msg==WM_DESTROY)dialogWindow=nullptr;return FALSE;
@@ -284,8 +309,10 @@ static void cleanSavedBreakpoints(){
 }
 static void callback(CBTYPE type,void* data){
  if(type==CB_SYSTEMBREAKPOINT){std::lock_guard<std::recursive_mutex> lock(gate);cleanSavedBreakpoints();if(enabled&&autoArm)DbgCmdExec("kvm_apply");}
+ else if(type==CB_RESUMEDEBUG){std::lock_guard<std::recursive_mutex> lock(gate);if(armed&&fastDiscovery()&&!interceptionStarted)interceptionStarted=GetTickCount64();}
+ else if(type==CB_BREAKPOINT){std::lock_guard<std::recursive_mutex> lock(gate);auto info=static_cast<PLUG_CB_BREAKPOINT*>(data);if(info&&info->breakpoint&&info->breakpoint->type==bp_normal&&discoveryEntry&&R::GetCIP()==discoveryEntry)DbgCmdExec("kvm_apply");}
  else if(type==CB_STOPPINGDEBUG||type==CB_DETACH){std::lock_guard<std::recursive_mutex> lock(gate);disarm(true);}
- else if(type==CB_INITDEBUG||type==CB_STOPDEBUG){std::lock_guard<std::recursive_mutex> lock(gate);armed=false;sites.clear();owned.clear();pending.clear();leaf1Hits=vendorHits=privilegeHits=0;}
+ else if(type==CB_INITDEBUG||type==CB_STOPDEBUG){std::lock_guard<std::recursive_mutex> lock(gate);armed=false;discoveryEntry=0;interceptionStarted=0;sites.clear();owned.clear();pending.clear();leaf1Hits=vendorHits=privilegeHits=0;}
  else if(type==CB_EXITTHREAD){std::lock_guard<std::recursive_mutex> lock(gate);pending.erase(static_cast<PLUG_CB_EXITTHREAD*>(data)->dwThreadId);}
  else if(type==CB_MENUENTRY){int id=static_cast<PLUG_CB_MENUENTRY*>(data)->hEntry;for(const auto& p:profiles)if(id==p.menu)DbgCmdExec(p.command);if(id==2)DbgCmdExec("kvm_profile off");if(id==3)settings(0,nullptr);if(id==4)DbgCmdExec("kvm_apply");if(id==5){std::lock_guard<std::recursive_mutex> lock(gate);autoArm=!autoArm;save();}if(id==6)DbgCmdExec("kvm_status");}
 }
@@ -293,7 +320,13 @@ extern "C" __declspec(dllexport) bool pluginit(PLUG_INITSTRUCT* init){handle=ini
  cpuidOption=GetPrivateProfileIntW(L"Options",L"CPUID",1,ini.c_str())!=0;firmwareOption=GetPrivateProfileIntW(L"Options",L"Firmware",1,ini.c_str())!=0;moduleOption=GetPrivateProfileIntW(L"Options",L"Sandboxie",1,ini.c_str())!=0;
  int savedProfile=GetPrivateProfileIntW(L"Settings",L"Profile",331,ini.c_str());for(unsigned i=0;i<profileCount;++i)if(profiles[i].id==savedProfile)selected=i;
  _plugin_registercommand(handle,"kvm_apply",apply,false);_plugin_registercommand(handle,"kvm_profile",profile,false);_plugin_registercommand(handle,"kvm_settings",settings,false);_plugin_registercommand(handle,"kvm_status",status,false);_plugin_registercommand(handle,"kvm_hit",hit,true);
- for(auto t:{CB_SYSTEMBREAKPOINT,CB_INITDEBUG,CB_STOPPINGDEBUG,CB_DETACH,CB_STOPDEBUG,CB_EXITTHREAD,CB_MENUENTRY})_plugin_registercallback(handle,t,callback);log("Loaded x64 profiles: 331, 340, 350, 360, 380, 394, 3101.");return true;}
-extern "C" __declspec(dllexport) void plugsetup(PLUG_SETUPSTRUCT* s){owner=s->hwndDlg;for(const auto& p:profiles)_plugin_menuaddentry(s->hMenu,p.menu,p.label);_plugin_menuaddentry(s->hMenu,2,"Disabled");_plugin_menuaddseparator(s->hMenu);_plugin_menuaddentry(s->hMenu,3,"Settings...");_plugin_menuaddentry(s->hMenu,4,"Apply to paused session");_plugin_menuaddentry(s->hMenu,5,"Auto-enable on start");_plugin_menuaddentry(s->hMenu,6,"Status");menuReady=true;menus();}
+ for(auto t:{CB_SYSTEMBREAKPOINT,CB_RESUMEDEBUG,CB_BREAKPOINT,CB_INITDEBUG,CB_STOPPINGDEBUG,CB_DETACH,CB_STOPDEBUG,CB_EXITTHREAD,CB_MENUENTRY})_plugin_registercallback(handle,t,callback);log("Loaded x64 profiles: 331, 340, 350, 360, 380, 394, 3101.");return true;}
+extern "C" __declspec(dllexport) void plugsetup(PLUG_SETUPSTRUCT* s){owner=s->hwndDlg;
+ const HRSRC resource=FindResourceW(instance,MAKEINTRESOURCEW(103),RT_RCDATA);
+ if(resource){const HGLOBAL data=LoadResource(instance,resource);ICONDATA icon{};icon.data=data?LockResource(data):nullptr;icon.size=SizeofResource(instance,resource);if(icon.data&&icon.size)_plugin_menuseticon(s->hMenu,&icon);}
+ for(const auto& p:profiles)_plugin_menuaddentry(s->hMenu,p.menu,p.label);_plugin_menuaddentry(s->hMenu,2,"Disabled");_plugin_menuaddseparator(s->hMenu);_plugin_menuaddentry(s->hMenu,3,"Settings...");_plugin_menuaddentry(s->hMenu,4,"Apply to paused session");_plugin_menuaddentry(s->hMenu,5,"Auto-enable on start");_plugin_menuaddentry(s->hMenu,6,"Status");menuReady=true;menus();}
 extern "C" __declspec(dllexport) bool plugstop(){std::lock_guard<std::recursive_mutex> lock(gate);if(dialogWindow||!disarm())return false;for(auto n:{"kvm_apply","kvm_profile","kvm_settings","kvm_status","kvm_hit"})_plugin_unregistercommand(handle,n);return true;}
 BOOL WINAPI DllMain(HINSTANCE h,DWORD reason,LPVOID){if(reason==DLL_PROCESS_ATTACH){instance=h;DisableThreadLibraryCalls(h);}return TRUE;}
+
+
+

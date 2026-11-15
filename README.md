@@ -1,6 +1,14 @@
 # KozVM
 
-An open-source anti-anti-VM plugin for x64dbg, built from my VMProtect research. **No kernel driver required.**
+An open-source anti-anti-VM plugin for **x64dbg**, built from my research into VMProtect's anti-VM checks. It supports the tested versions from **3.3.1 to 3.10.1**, with a separate profile for each version.
+
+> **No kernel driver required, including the VMProtect 3.10.1 profile.**
+>
+> KozVM runs in user mode inside x64dbg. No driver installation or VM-wide configuration changes are needed.
+
+**x64 | Separate version profiles | No kernel driver | GPLv2**
+
+[Download](https://github.com/ivanpotatoes/KozVM/releases/latest) · [x64 demo](https://www.youtube.com/watch?v=50LzDyHwmZY) · [Research](#research-behind-kozvm) · [Report a bug](https://github.com/ivanpotatoes/KozVM/issues)
 
 KozVM discovers addresses in the loaded target instead of relying on sample names or fixed addresses. Each tested version has its own profile, selectable from the Plugins menu or the settings window.
 
@@ -40,6 +48,14 @@ Unicorn executes an isolated snapshot to discover CPUID sites, then KozVM instal
 
 KozVM.dp64.ini stores the selected profile, auto-arm setting and individual options. Profile IDs are listed above. The implementations are C++ code; adding an INI entry alone does not implement a new VMProtect version.
 
+## x64 demo
+
+BasicProbe is protected with different VMProtect versions, then run inside VirtualBox under x64dbg with the matching KozVM profile. The video shows the protection setup, profile selection and the protected program running with the plugin enabled.
+
+Click the thumbnail to watch on YouTube.
+
+[![Watch the KozVM x64 demo](https://img.youtube.com/vi/50LzDyHwmZY/hqdefault.jpg)](https://www.youtube.com/watch?v=50LzDyHwmZY)
+
 ## Build
 
 Use Visual Studio 2022 C++ tools, CMake, Python 3 and the x64dbg SDK.
@@ -54,6 +70,14 @@ Output: build/Release/KozVM.dp64 and its KozVM runtime directory. The dependency
 
 main contains the published project, x64 tracks the x64 implementation, and x32 is reserved for future development.
 
+## Research behind KozVM
+
+The plugin is based on these version-by-version analyses of VMProtect's anti-VM checks:
+
+- [VMProtect 3.3.1 anti-VM analysis](https://ivankozlovsky.com/blog/vmprotect-331-anti-vm-analysis)
+- [VMProtect 3.6.x–3.8.x anti-VM analysis](https://ivankozlovsky.com/blog/vmprotect-36x-38x-anti-vm-analysis)
+- [VMProtect 3.9.x–3.10.x anti-VM analysis](https://ivankozlovsky.com/blog/vmprotect-39x-310x-anti-vm-analysis)
+
 ## License and contact
 
 GPLv2. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md). Release source packages include the corresponding Unicorn source archive.
@@ -64,3 +88,7 @@ Ivan Kozlovsky
 - Email: contact@ivankozlovsky.com
 - PGP: https://ivankozlovsky.com/pgp.asc
 - Bug reports: https://github.com/ivanpotatoes/KozVM/issues
+
+## Star history
+
+[![KozVM star history](https://api.star-history.com/svg?repos=ivanpotatoes/KozVM&type=Date)](https://www.star-history.com/?repos=ivanpotatoes%2FKozVM&type=date&legend=top-left)

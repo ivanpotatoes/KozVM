@@ -97,4 +97,4 @@ Ivan Kozlovsky
 
 ## Star history
 
-[![KozVM star history](https://api.star-history.com/svg?repos=ivanpotatoes/KozVM&type=Date)](https://www.star-history.com/?repos=ivanpotatoes%2FKozVM&type=date&legend=top-left)
+[![KozVM star history](https://api.star-history.com/svg?repos=ivanpotatoes/KozVM&type=Date)](https://www.star-history.com/?repos=ivanpotatoes%2Fkozvm&type=date&legend=top-left)

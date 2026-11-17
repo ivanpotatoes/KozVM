@@ -88,9 +88,9 @@ Available hardware breakpoint slots can affect installation. If startup takes lo
 BasicProbe is protected with each VMProtect version, then run **inside VirtualBox** under x64dbg. The video includes protection setup, profile selection and the program running with KozVM enabled.
 
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=50LzDyHwmZY"><img src="https://img.youtube.com/vi/50LzDyHwmZY/hqdefault.jpg" width="560" alt="Watch the KozVM x64 demo in VirtualBox"></a>
+  <a href="https://ivankozlovsky.com/uploads/videos/VMProtect-anti-vm-bypass-test-example-video-x64.mp4"><img src="media/demo-x64-preview.jpg" width="560" alt="Watch the KozVM x64 demo in VirtualBox"></a>
   <br>
-  <a href="https://www.youtube.com/watch?v=50LzDyHwmZY">Watch on YouTube</a>
+  <a href="https://ivankozlovsky.com/uploads/videos/VMProtect-anti-vm-bypass-test-example-video-x64.mp4">Watch the x64 demo</a>
 </p>
 
 ## Build from source
